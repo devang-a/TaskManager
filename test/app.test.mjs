@@ -74,6 +74,8 @@ test('local task website seeds Notion snapshot and exposes REST plus MCP operati
     assert.equal((await (await fetch(`${base}/api/tasks/${taskId}`)).json()).task.done, false);
     const search = await (await fetch(`${base}/api/tasks?q=Updated%20note`)).json();
     assert.equal(search.tasks.length, 1);
+    const multiWordSearch = await (await fetch(`${base}/api/tasks?view=all&q=Agent-created%20task`)).json();
+    assert.equal(multiWordSearch.tasks.length, 1);
 
     mcp = spawn(process.execPath, [serverFile, '--mcp'], { env: { ...process.env, NITC_TASKS_DB: dbFile }, stdio: ['pipe', 'pipe', 'pipe'] });
     const rl = createInterface({ input: mcp.stdout, crlfDelay: Infinity });
@@ -100,8 +102,46 @@ test('local task website seeds Notion snapshot and exposes REST plus MCP operati
     assert.equal(mcpReopened.structuredContent.task.done, false);
     const courses = await send('tools/call', { name: 'list_courses', arguments: {} });
     assert.equal(courses.structuredContent.courses.length, 9);
+    const mcpMultiSearch = await send('tools/call', { name: 'search_tasks', arguments: { q: 'Agent-created MCP' } });
+    assert.equal(mcpMultiSearch.structuredContent.tasks.length, 1);
+    const studySummary = await send('tools/call', { name: 'get_study_summary', arguments: { days: 7 } });
+    assert.equal(studySummary.structuredContent.days.length, 7);
   } finally {
     if (mcp) mcp.kill('SIGTERM');
+    server.kill('SIGTERM');
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test('study timer persists daily hours and returns progress history', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'nitc-hq-study-'));
+  const dbFile = join(temp, 'tasks.sqlite');
+  const server = spawn(process.execPath, [serverFile], { env: { ...process.env, PORT: '0', NITC_TASKS_DB: dbFile }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const base = await waitForUrl(server);
+    const initial = await (await fetch(`${base}/api/study?days=14`)).json();
+    assert.equal(initial.running, false);
+    assert.equal(initial.todayTotalSeconds, 0);
+    assert.equal(initial.days.length, 14);
+    assert.equal(initial.summary.streak, 0);
+
+    const started = await (await fetch(`${base}/api/study/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+    assert.equal(started.running, true);
+    assert.ok(started.runningSince);
+
+    await new Promise(r => setTimeout(r, 1100));
+
+    const ended = await (await fetch(`${base}/api/study/end-day?days=7`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+    assert.equal(ended.running, false);
+    assert.equal(ended.endedDay, true);
+    assert.equal(ended.days.length, 7);
+    assert.ok(ended.todaySavedSeconds >= 1, `expected >= 1s saved, got ${ended.todaySavedSeconds}`);
+    assert.equal(ended.summary.streak, 1);
+
+    const after = await (await fetch(`${base}/api/study?days=14`)).json();
+    assert.equal(after.running, false);
+    assert.equal(after.todaySavedSeconds, ended.todaySavedSeconds);
+  } finally {
     server.kill('SIGTERM');
     await rm(temp, { recursive: true, force: true });
   }

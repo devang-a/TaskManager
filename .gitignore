@@ -4,3 +4,5 @@ data/*.sqlite-wal
 *.sqlite*
 node_modules/
 .DS_Store
+backend-rs/target/
+macos-app/nitc-hq-app

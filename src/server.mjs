@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID, randomBytes, createHmac, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -15,6 +15,7 @@ mkdirSync(dirname(dbFile), { recursive: true });
 const db = new DatabaseSync(dbFile);
 db.exec(`
   PRAGMA journal_mode = WAL;
+  PRAGMA busy_timeout = 5000;
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -30,6 +31,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS tasks_done_priority_due ON tasks(done, priority DESC, due_date ASC);
   CREATE INDEX IF NOT EXISTS tasks_course ON tasks(course);
+  CREATE TABLE IF NOT EXISTS study_days (
+    date TEXT PRIMARY KEY,
+    seconds INTEGER NOT NULL DEFAULT 0 CHECK(seconds >= 0),
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS study_timer (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    running_since TEXT,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 const courses = [
@@ -38,6 +49,115 @@ const courses = [
   'IIT Madras — Programming with Python', 'IIT Madras — English 1'
 ];
 const now = () => new Date().toISOString();
+const IST_OFFSET_MS = 330 * 60 * 1000;
+function istDateString(date = new Date()) {
+  const shifted = new Date(date.getTime() + IST_OFFSET_MS);
+  return shifted.toISOString().slice(0, 10);
+}
+function addDaysISO(dateStr, delta) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+function istDayEndMs(dateStr) {
+  return Date.parse(`${addDaysISO(dateStr, 1)}T00:00:00Z`) - IST_OFFSET_MS;
+}
+function splitElapsedByISTDay(startMs, endMs) {
+  const buckets = new Map();
+  let cursor = startMs;
+  while (cursor < endMs) {
+    const day = istDateString(new Date(cursor));
+    const nextMidnight = istDayEndMs(day);
+    const segmentEnd = Math.min(endMs, nextMidnight);
+    const secs = Math.floor((segmentEnd - cursor) / 1000);
+    if (secs > 0) buckets.set(day, (buckets.get(day) ?? 0) + secs);
+    if (segmentEnd === cursor) break;
+    cursor = segmentEnd;
+  }
+  return buckets;
+}
+function getTimerRow() {
+  return db.prepare('SELECT running_since AS runningSince, updated_at AS updatedAt FROM study_timer WHERE id = 1').get() ?? { runningSince: null, updatedAt: null };
+}
+function upsertStudyDay(dateStr, deltaSeconds, ts) {
+  if (deltaSeconds <= 0) return;
+  db.prepare(`INSERT INTO study_days (date, seconds, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET seconds = seconds + excluded.seconds, updated_at = excluded.updated_at`).run(dateStr, deltaSeconds, ts);
+}
+function getStudyState({ days = 14 } = {}) {
+  const span = Math.max(7, Math.min(90, Number.isFinite(Number(days)) ? Math.floor(Number(days)) : 14));
+  const nowDate = new Date();
+  const nowMs = nowDate.getTime();
+  const today = istDateString(nowDate);
+  const timer = getTimerRow();
+  const liveBuckets = timer.runningSince ? splitElapsedByISTDay(Date.parse(timer.runningSince), nowMs) : new Map();
+  const savedRows = db.prepare('SELECT date, seconds FROM study_days ORDER BY date ASC').all();
+  const savedMap = new Map(savedRows.map(r => [r.date, Number(r.seconds)]));
+  const combinedMap = new Map(savedMap);
+  for (const [day, secs] of liveBuckets.entries()) {
+    combinedMap.set(day, (combinedMap.get(day) ?? 0) + secs);
+  }
+  const series = [];
+  for (let i = span - 1; i >= 0; i--) {
+    const d = addDaysISO(today, -i);
+    series.push({ date: d, seconds: combinedMap.get(d) ?? 0 });
+  }
+  const todaySavedSeconds = savedMap.get(today) ?? 0;
+  const todayTotalSeconds = combinedMap.get(today) ?? 0;
+  let weekSeconds = 0;
+  for (let i = 0; i < 7; i++) weekSeconds += combinedMap.get(addDaysISO(today, -i)) ?? 0;
+  let totalSeconds = 0;
+  let bestDaySeconds = 0;
+  let activeDays = 0;
+  for (const secs of combinedMap.values()) {
+    totalSeconds += secs;
+    if (secs > bestDaySeconds) bestDaySeconds = secs;
+    if (secs > 0) activeDays++;
+  }
+  let streak = 0;
+  let checkDay = todayTotalSeconds > 0 ? today : addDaysISO(today, -1);
+  while ((combinedMap.get(checkDay) ?? 0) > 0) {
+    streak++;
+    checkDay = addDaysISO(checkDay, -1);
+  }
+  const rangeTotal = series.reduce((sum, item) => sum + item.seconds, 0);
+  const avgSeconds = Math.round(rangeTotal / span);
+  return {
+    today,
+    running: Boolean(timer.runningSince),
+    runningSince: timer.runningSince,
+    todaySavedSeconds,
+    todayTotalSeconds,
+    days: series,
+    summary: { todaySeconds: todayTotalSeconds, weekSeconds, totalSeconds, avgSeconds, streak, bestDaySeconds, activeDays }
+  };
+}
+function startStudyTimer(days) {
+  const timer = getTimerRow();
+  if (!timer.runningSince) {
+    const ts = now();
+    db.prepare(`INSERT INTO study_timer (id, running_since, updated_at) VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET running_since = excluded.running_since, updated_at = excluded.updated_at`).run(ts, ts);
+  }
+  return getStudyState({ days });
+}
+function stopStudyTimer(days) {
+  const timer = getTimerRow();
+  const ts = now();
+  if (timer.runningSince) {
+    const startMs = Date.parse(timer.runningSince);
+    const endMs = Date.parse(ts);
+    const buckets = splitElapsedByISTDay(startMs, endMs);
+    db.exec('BEGIN');
+    try {
+      for (const [day, secs] of buckets.entries()) upsertStudyDay(day, secs, ts);
+      db.prepare(`INSERT INTO study_timer (id, running_since, updated_at) VALUES (1, NULL, ?)
+        ON CONFLICT(id) DO UPDATE SET running_since = NULL, updated_at = excluded.updated_at`).run(ts);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  return getStudyState({ days });
+}
 function validDateOnly(date) {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
   const parsed = Date.parse(`${date}T00:00:00Z`);
@@ -129,7 +249,11 @@ function listTasks({ view = 'all', course = '', q = '', from = '', to = '' } = {
   if (view === 'todo') where.push('done = 0');
   if (view === 'done') where.push('done = 1');
   if (course) { where.push('course = ?'); args.push(course); }
-  if (q.trim()) { where.push('(instr(lower(title), lower(?)) > 0 OR instr(lower(notes), lower(?)) > 0 OR instr(lower(coalesce(course, \'\')), lower(?)) > 0)'); const needle = q.trim(); args.push(needle, needle, needle); }
+  const tokens = q.trim().split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    where.push("(instr(lower(title), lower(?)) > 0 OR instr(lower(notes), lower(?)) > 0 OR instr(lower(coalesce(course, '')), lower(?)) > 0)");
+    args.push(token, token, token);
+  }
   if (from) { where.push('due_date >= ?'); args.push(from); }
   if (to) { where.push('due_date <= ?'); args.push(to); }
   const ordering = view === 'done'
@@ -156,8 +280,8 @@ function validateTask(input, { partial = false } = {}) {
     const type = result.type ?? input.type;
     const course = has('course') ? input.course : undefined;
     if (type === 'Coursework') {
-      const selected = course === undefined ? null : course;
-      if (!courses.includes(selected)) throw fail('a valid course is required for Coursework');
+      const selected = typeof course === 'string' ? course.trim() : null;
+      if (!courses.includes(selected)) throw fail(`a valid course is required for Coursework (${courses.join(', ')})`);
       result.course = selected;
     } else result.course = null;
   }
@@ -230,154 +354,27 @@ async function readBody(req) {
   return parsed;
 }
 
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.webp': 'image/webp' };
 
-// ---- Optional Google sign-in gate (env-driven; off by default for local use) ----
-const GOOGLE_CLIENT_ID = process.env.NITC_GOOGLE_CLIENT_ID ?? '';
-const GOOGLE_CLIENT_SECRET = process.env.NITC_GOOGLE_CLIENT_SECRET ?? '';
-const ALLOWED_EMAIL = (process.env.NITC_ALLOWED_EMAIL ?? '').trim().toLowerCase();
-const AUTH_ENABLED = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && ALLOWED_EMAIL);
-const SESSION_SECRET = process.env.NITC_SESSION_SECRET ?? randomBytes(32).toString('hex');
-const SESSION_MAX_AGE = 30 * 24 * 3600;
-const pendingLogins = new Map(); // state -> { nonce, exp }
-let googleCerts = { at: 0, keys: {} };
+const useLaunchdSocket = process.argv.includes('--launchd') || process.env.NITC_LAUNCHD === '1';
+const idleTimeoutMs = Number(process.env.NITC_IDLE_MS ?? (useLaunchdSocket ? 120000 : 0));
+let idleTimer = null;
+function touchIdleTimer() {
+  if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    server.close(() => {
+      try { db.close(); } catch { /* already closed */ }
+      process.exit(0);
+    });
+  }, idleTimeoutMs);
+  idleTimer.unref?.();
+}
 
-function parseCookies(req) {
-  const out = {};
-  for (const part of String(req.headers.cookie ?? '').split(';')) {
-    const i = part.indexOf('=');
-    if (i > 0) {
-      try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* skip bad cookie */ }
-    }
-  }
-  return out;
-}
-function b64urlEncode(value) { return Buffer.from(value).toString('base64url'); }
-function sessionValue(email, exp) {
-  const payload = b64urlEncode(JSON.stringify({ e: email, x: exp }));
-  const sig = createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
-  return `${payload}.${sig}`;
-}
-function sessionUser(req) {
-  const raw = parseCookies(req).nitc_session ?? '';
-  const dot = raw.lastIndexOf('.');
-  if (dot < 1) return null;
-  const payload = raw.slice(0, dot);
-  const sig = raw.slice(dot + 1);
-  const expected = createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (typeof data.e !== 'string' || typeof data.x !== 'number' || data.x * 1000 < Date.now()) return null;
-    return data.e;
-  } catch { return null; }
-}
-function cookieHeader(name, value, maxAge) {
-  // No Secure flag: the app itself serves plain HTTP behind the tunnel (TLS ends at Cloudflare).
-  // Traffic is still encrypted in transit; the cookie is HttpOnly + SameSite=Lax + HMAC-signed.
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
-}
-function redirect(res, location, cookies = []) {
-  const headers = { location, 'cache-control': 'no-store' };
-  if (cookies.length) headers['set-cookie'] = cookies;
-  res.writeHead(302, headers);
-  res.end();
-}
-function requestScheme(req) {
-  const forwarded = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase();
-  if (forwarded === 'https' || forwarded === 'http') return forwarded;
-  try {
-    const visitor = JSON.parse(req.headers['cf-visitor'] ?? '');
-    if (visitor.scheme === 'https' || visitor.scheme === 'http') return visitor.scheme;
-  } catch { /* fall through */ }
-  return 'http';
-}
-function redirectUri(req) {
-  const host = String(req.headers.host ?? '').trim();
-  if (!hostAllowed(host)) throw fail('Forbidden');
-  return `${requestScheme(req)}://${host}/auth/callback`;
-}
-function loginPage() {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Sign in · NITC HQ Tasks</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0b;color:#f2f2f0;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box}.card{max-width:360px;text-align:center;border:1px solid #232329;border-radius:16px;padding:36px 30px;background:#101013}.mark{width:44px;height:44px;border-radius:14px;background:#f2f2f0;color:#111113;display:grid;place-items:center;font-weight:800;font-size:20px;margin:0 auto 16px}h1{font-size:20px;margin:0 0 8px}p{font-size:13px;color:#8f8f96;margin:0 0 22px}a{display:inline-flex;align-items:center;gap:10px;background:#f2f2f0;color:#111113;text-decoration:none;font-weight:600;font-size:14px;padding:11px 20px;border-radius:10px}</style></head><body><div class="card"><div class="mark">N</div><h1>Private task desk</h1><p>Sign in with your Google account to continue.</p><a href="/auth/start">Continue with Google</a></div></body></html>`;
-}
-async function googleCertFor(kid) {
-  if (Date.now() - googleCerts.at > 3600 * 1000) {
-    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
-    if (!res.ok) throw fail('Sign-in failed');
-    const data = await res.json();
-    googleCerts = { at: Date.now(), keys: Object.fromEntries((data.keys ?? []).map(k => [k.kid, k])) };
-  }
-  const jwk = googleCerts.keys[kid];
-  if (!jwk) throw fail('Sign-in failed');
-  return createPublicKey({ key: jwk, format: 'jwk' });
-}
-async function verifyGoogleToken(idToken, nonce) {
-  const parts = String(idToken).split('.');
-  if (parts.length !== 3) throw fail('Sign-in failed');
-  let header, payload;
-  try {
-    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
-    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-  } catch { throw fail('Sign-in failed'); }
-  if (header.alg !== 'RS256' || !header.kid) throw fail('Sign-in failed');
-  const key = await googleCertFor(header.kid);
-  const signed = Buffer.from(`${parts[0]}.${parts[1]}`);
-  const sig = Buffer.from(parts[2], 'base64url');
-  if (!verify('sha256', signed, key, sig)) throw fail('Sign-in failed');
-  const now = Math.floor(Date.now() / 1000);
-  const issOk = payload.iss === 'https://accounts.google.com' || payload.iss === 'accounts.google.com';
-  if (!issOk || payload.aud !== GOOGLE_CLIENT_ID || typeof payload.exp !== 'number' || payload.exp < now) throw fail('Sign-in failed');
-  if (payload.nonce !== nonce || payload.email_verified !== true) throw fail('Sign-in failed');
-  if (String(payload.email ?? '').toLowerCase() !== ALLOWED_EMAIL) throw fail('This account is not allowed');
-  return payload.email;
-}
 const server = http.createServer(async (req, res) => {
+  touchIdleTimer();
   try {
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (AUTH_ENABLED) {
-      if (req.method === 'GET' && url.pathname === '/login') {
-        if (sessionUser(req)) return redirect(res, '/');
-        const body = loginPage();
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body), 'cache-control': 'no-store' });
-        return res.end(body);
-      }
-      if (req.method === 'GET' && url.pathname === '/auth/start') {
-        const state = randomBytes(16).toString('hex');
-        const nonce = randomBytes(16).toString('hex');
-        pendingLogins.set(state, { nonce, exp: Date.now() + 10 * 60 * 1000 });
-        const params = new URLSearchParams({ response_type: 'code', client_id: GOOGLE_CLIENT_ID, redirect_uri: redirectUri(req), scope: 'openid email profile', state, nonce });
-        return redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params}`, [cookieHeader('nitc_oauth', state, 600)]);
-      }
-      if (req.method === 'GET' && url.pathname === '/auth/callback') {
-        const state = url.searchParams.get('state') ?? '';
-        const cookies = parseCookies(req);
-        const pending = pendingLogins.get(state);
-        pendingLogins.delete(state);
-        if (!state || cookies.nitc_oauth !== state || !pending || pending.exp < Date.now()) throw fail('Sign-in failed');
-        const code = url.searchParams.get('code') ?? '';
-        if (!code) throw fail('Sign-in failed');
-        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-          method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri(req), grant_type: 'authorization_code' })
-        });
-        if (!tokenRes.ok) throw fail('Sign-in failed');
-        const tokens = await tokenRes.json();
-        if (!tokens.id_token) throw fail('Sign-in failed');
-        const email = await verifyGoogleToken(tokens.id_token, pending.nonce);
-        const exp = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE;
-        return redirect(res, '/', [cookieHeader('nitc_session', sessionValue(email, exp), SESSION_MAX_AGE), cookieHeader('nitc_oauth', '', 0)]);
-      }
-      if (req.method === 'GET' && url.pathname === '/logout') {
-        return redirect(res, '/login', [cookieHeader('nitc_session', '', 0)]);
-      }
-      if (!['/api/health'].includes(url.pathname) && !sessionUser(req)) {
-        if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Sign in required' });
-        return redirect(res, '/login');
-      }
-    }
     if (url.pathname.startsWith('/api/')) {
       if (!hostAllowed(req.headers.host)) return json(res, 403, { error: 'Forbidden' });
       if (!originAllowed(req.headers.origin)) return json(res, 403, { error: 'Forbidden' });
@@ -409,6 +406,17 @@ const server = http.createServer(async (req, res) => {
         if (!hasJsonContentType(req)) return json(res, 400, { error: 'Content-Type must be application/json' });
         return json(res, 201, { task: insertTask(await readBody(req)) });
       }
+      if (req.method === 'GET' && url.pathname === '/api/study') {
+        return json(res, 200, getStudyState({ days: url.searchParams.get('days') ?? 14 }));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/study/start') {
+        if (!hasJsonContentType(req) && !isEmptyBodyRequest(req)) return json(res, 400, { error: 'Content-Type must be application/json' });
+        return json(res, 200, startStudyTimer(url.searchParams.get('days') ?? 14));
+      }
+      if (req.method === 'POST' && (url.pathname === '/api/study/pause' || url.pathname === '/api/study/end-day')) {
+        if (!hasJsonContentType(req) && !isEmptyBodyRequest(req)) return json(res, 400, { error: 'Content-Type must be application/json' });
+        return json(res, 200, { ...stopStudyTimer(url.searchParams.get('days') ?? 14), endedDay: url.pathname === '/api/study/end-day' });
+      }
       return json(res, 404, { error: 'Not found' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed' });
@@ -417,7 +425,8 @@ const server = http.createServer(async (req, res) => {
     if (!file.startsWith(`${publicDir}${sep}`) && file !== publicDir) return json(res, 403, { error: 'Forbidden' });
     if (!existsSync(file)) return json(res, 404, { error: 'Not found' });
     const content = readFileSync(file);
-    res.writeHead(200, { 'content-type': mime[extname(file)] ?? 'application/octet-stream', 'content-length': content.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    const cacheControl = pathname.startsWith('/themes/') ? 'public, max-age=86400' : 'no-store';
+    res.writeHead(200, { 'content-type': mime[extname(file)] ?? 'application/octet-stream', 'content-length': content.length, 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' });
     res.end(req.method === 'HEAD' ? undefined : content);
   } catch (error) {
     const status = error?.status ?? (error instanceof SyntaxError ? 400 : 500);
@@ -445,7 +454,8 @@ const tools = [
   { name: 'update_task', description: 'Edit a task by exact id. Do not use this to resolve ambiguous task references; search first and ask the user if multiple tasks match.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, course: { type: ['string', 'null'], enum: [...courses, null] }, type: { type: 'string', enum: ['Coursework', 'Miscellaneous'] }, dueDate: { type: ['string', 'null'] }, notes: { type: 'string' }, priority: { type: ['integer', 'null'], minimum: 1, maximum: 10 } }, required: ['id'] } },
   { name: 'complete_task', description: 'Mark a task complete without deleting it. Search first; if the user reference matches multiple tasks, ask which one before changing it.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'reopen_task', description: 'Reopen a completed task by exact id.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-  { name: 'list_courses', description: 'List the supported course options and institution tags.', inputSchema: { type: 'object', properties: {} } }
+  { name: 'list_courses', description: 'List the supported course options and institution tags.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'get_study_summary', description: 'Read daily study hours, current streak, and active study timer state (Asia/Kolkata).', inputSchema: { type: 'object', properties: { days: { type: 'integer', minimum: 7, maximum: 90, default: 14 } } } }
 ];
 function mcpResult(value) { return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }; }
 function mcpError(error) { return { content: [{ type: 'text', text: error.message || 'MCP tool failed' }], isError: true }; }
@@ -462,6 +472,7 @@ function callTool(name, args = {}) {
     case 'complete_task': { const task = updateTask(args.id, { done: true }); if (!task) throw new Error('Task not found'); return mcpResult({ task }); }
     case 'reopen_task': { const task = updateTask(args.id, { done: false }); if (!task) throw new Error('Task not found'); return mcpResult({ task }); }
     case 'list_courses': return mcpResult({ courses: courses.map(course => ({ name: course, institution: course.startsWith('IIT Madras') ? 'IIT Madras' : 'NIT Calicut', color: course.startsWith('IIT Madras') ? 'purple' : 'green' })) });
+    case 'get_study_summary': return mcpResult(getStudyState({ days: args.days ?? 14 }));
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
@@ -494,5 +505,22 @@ function startMcp() {
 if (process.argv.includes('--mcp')) startMcp();
 else {
   const port = Number(process.env.PORT ?? 4173);
-  server.listen(port, '127.0.0.1', () => process.stdout.write(`NITC HQ Tasks is available at http://127.0.0.1:${server.address().port}\n`));
+  server.on('error', error => {
+    process.stderr.write(`Server error: ${error.message}\n`);
+    process.exit(1);
+  });
+  const shutdown = () => {
+    server.close(() => {
+      try { db.close(); } catch { /* already closed */ }
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  if (useLaunchdSocket) {
+    touchIdleTimer();
+    server.listen({ fd: 0 }, () => process.stdout.write('NITC HQ Tasks listening via launchd socket activation\n'));
+  } else {
+    server.listen(port, '127.0.0.1', () => process.stdout.write(`NITC HQ Tasks is available at http://127.0.0.1:${server.address().port}\n`));
+  }
 }
