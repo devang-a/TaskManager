@@ -102,7 +102,7 @@
     <div class="study-center">
       <div class="study-status-row">
         <span class="study-pulse" id="study-pulse" aria-hidden="true"></span>
-        <span id="study-day-label">Today</span>
+        <span id="study-day-label" aria-label="Current time"></span>
       </div>
       <div class="study-clock" id="study-clock" role="timer" aria-live="off">00:00:00</div>
       <div class="study-controls">
@@ -110,9 +110,11 @@
           <span class="study-toggle-icon" id="study-toggle-icon" aria-hidden="true"></span>
           <span id="study-toggle-label">Start studying</span>
         </button>
-        <button type="button" class="study-secondary-btn" id="study-finish" hidden>Done for today</button>
+        <button type="button" class="study-secondary-btn study-finish-icon" id="study-finish" aria-label="Done for today" hidden>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        </button>
       </div>
-      <p class="study-whisper" id="study-whisper">Space to start · your hours build every day</p>
+      <p class="study-whisper" id="study-whisper" hidden></p>
     </div>
 
     <div id="study-graph-panel" class="study-graph-panel" role="region" aria-label="Study hours progress" hidden>
@@ -173,43 +175,39 @@
 
       <div id="music-player-bar" class="music-player-bar" hidden>
         <div class="music-main-row">
+          <button type="button" class="music-btn music-star-btn" id="music-fav" aria-label="Favorite track" aria-pressed="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l2.82 5.71 6.3.92-4.56 4.44 1.08 6.28L12 17.18l-5.64 2.97 1.08-6.28-4.56-4.44 6.3-.92L12 2.8z"/></svg>
+          </button>
           <div class="music-art-wrap">
             <img id="music-art" class="music-art" alt="" hidden>
             <span id="music-art-fallback" class="music-art-fallback" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
             </span>
           </div>
           <div class="music-info">
             <div id="music-title" class="music-title">Not playing</div>
             <div id="music-artist" class="music-artist">Apple Music</div>
           </div>
+          <span class="music-divider" aria-hidden="true"></span>
           <div class="music-actions">
-            <button type="button" class="music-btn" id="music-fav" aria-label="Favorite track" aria-pressed="false" title="Favorite">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+            <button type="button" class="music-btn music-btn-sub" id="music-shuffle" aria-label="Toggle shuffle" aria-pressed="false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 18h1.8c1.3 0 2.5-.6 3.3-1.7l5.8-8.6c.7-1.1 2-1.7 3.3-1.7H21"/><path d="m17.5 2.5 3.5 3.5-3.5 3.5"/><path d="M2 6h2.2c1.4 0 2.7.8 3.4 2"/><path d="M21 18h-4.8c-1.3 0-2.6-.7-3.3-1.8l-.6-.9"/><path d="m17.5 14.5 3.5 3.5-3.5 3.5"/></svg>
             </button>
-            <button type="button" class="music-btn" id="music-shuffle" aria-label="Toggle shuffle" aria-pressed="false" title="Shuffle">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg>
+            <button type="button" class="music-btn music-btn-transport" id="music-prev" aria-label="Previous track">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.6 7.4c.5-.3 1.1.06 1.1.64v7.92c0 .58-.6.94-1.1.64l-6.4-3.96a.75.75 0 0 1 0-1.28l6.4-3.96zm9 0c.5-.3 1.1.06 1.1.64v7.92c0 .58-.6.94-1.1.64l-6.4-3.96a.75.75 0 0 1 0-1.28l6.4-3.96z"/></svg>
             </button>
-            <button type="button" class="music-btn" id="music-prev" aria-label="Previous track" title="Previous">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+            <button type="button" class="music-btn music-btn-play" id="music-play" aria-label="Play or pause"></button>
+            <button type="button" class="music-btn music-btn-transport" id="music-next" aria-label="Next track">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.4 7.4c-.5-.3-1.1.06-1.1.64v7.92c0 .58.6.94 1.1.64l6.4-3.96a.75.75 0 0 0 0-1.28l-6.4-3.96zm-9 0c-.5-.3-1.1.06-1.1.64v7.92c0 .58.6.94 1.1.64l6.4-3.96a.75.75 0 0 0 0-1.28L3.4 7.4z"/></svg>
             </button>
-            <button type="button" class="music-btn music-btn-play" id="music-play" aria-label="Play or pause" title="Play / Pause"></button>
-            <button type="button" class="music-btn" id="music-next" aria-label="Next track" title="Next">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
-            </button>
-            <button type="button" class="music-btn" id="music-repeat" aria-label="Cycle repeat" aria-pressed="false" title="Repeat">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+            <button type="button" class="music-btn music-btn-sub" id="music-repeat" aria-label="Cycle repeat" aria-pressed="false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2.5 3.5 3.5L17 9.5"/><path d="M3.5 11v-1a4 4 0 0 1 4-4h13"/><path d="M7 21.5 3.5 18 7 14.5"/><path d="M20.5 13v1a4 4 0 0 1-4 4h-13"/></svg>
               <span class="music-repeat-one" id="music-repeat-one" hidden>1</span>
             </button>
-            <button type="button" class="music-btn" id="music-queue-btn" aria-label="Show playlist queue" aria-expanded="false" aria-controls="music-queue-panel" title="Playlist & Volume">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h14M3 12h14M3 18h10"/><path d="M19 15v6M16 18h6"/></svg>
+            <button type="button" class="music-btn music-btn-sub" id="music-queue-btn" aria-label="Show playlist queue" aria-expanded="false" aria-controls="music-queue-panel">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="4.5" cy="7" r="1" fill="currentColor" stroke="none"/><path d="M9 7h11"/><circle cx="4.5" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M9 12h11"/><circle cx="4.5" cy="17" r="1" fill="currentColor" stroke="none"/><path d="M9 17h11"/></svg>
             </button>
           </div>
-        </div>
-        <div class="music-progress-row">
-          <span id="music-pos" class="music-time">0:00</span>
-          <input id="music-seek" class="music-seek" type="range" min="0" max="100" value="0" step="1" aria-label="Seek track position">
-          <span id="music-dur" class="music-time">0:00</span>
         </div>
       </div>
     </aside>

@@ -377,6 +377,14 @@ async function loadStudy() {
     applyStudyPayload(data);
   } catch { /* ignore transient background poll errors */ }
 }
+function formatWallClock(date = new Date()) {
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).format(date).toUpperCase();
+}
 function renderStudyClockOnly() {
   const currentDay = todayISO();
   if (study.today && study.today !== currentDay) {
@@ -389,6 +397,8 @@ function renderStudyClockOnly() {
     clockEl.textContent = formatClock(todaySecs);
     clockEl.classList.toggle('is-running', study.running);
   }
+  const dayEl = $('#study-day-label');
+  if (dayEl) dayEl.textContent = formatWallClock();
   const badge = $('#study-nav-badge');
   if (badge) {
     badge.hidden = !study.running;
@@ -403,9 +413,8 @@ function renderStudyClockOnly() {
 }
 function renderStudy() {
   const todaySecs = liveTodaySeconds();
-  const todayLabel = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date());
   const dayEl = $('#study-day-label');
-  if (dayEl) dayEl.textContent = study.running ? `${todayLabel} · Studying` : todaySecs > 0 ? `${todayLabel} · Paused` : todayLabel;
+  if (dayEl) dayEl.textContent = formatWallClock();
   const pulse = $('#study-pulse');
   if (pulse) pulse.classList.toggle('is-live', study.running);
 
@@ -420,23 +429,6 @@ function renderStudy() {
 
   const finishBtn = $('#study-finish');
   if (finishBtn) finishBtn.hidden = !(study.running || todaySecs > 0);
-
-  const whisper = $('#study-whisper');
-  if (whisper) {
-    const streak = study.summary.streak || 0;
-    const weekSecs = (study.summary.weekSeconds || 0) - (study.summary.todaySeconds || 0) + todaySecs;
-    if (study.running) {
-      whisper.textContent = streak > 0
-        ? `${streak} day streak · ${formatDurationHuman(weekSecs)} this week`
-        : 'Stay with one thing. Pause whenever you need a break.';
-    } else if (todaySecs > 0) {
-      whisper.textContent = `${formatDurationHuman(todaySecs)} logged today · click Done for today when you wrap up`;
-    } else if (streak > 0) {
-      whisper.textContent = `${streak} day streak · press Space to begin today’s session`;
-    } else {
-      whisper.textContent = 'Press Space to start · your hours build every day';
-    }
-  }
 
   const graphPanel = $('#study-graph-panel');
   const graphToggle = $('#study-graph-toggle');
@@ -668,7 +660,6 @@ const music = {
   queueOpen: false,
   queueTracks: [],
   artTrackId: '',
-  seeking: false,
   busy: false
 };
 
@@ -722,19 +713,13 @@ async function sendMusicControl(payload) {
   } catch (error) { showToast(error.message); }
   finally { music.busy = false; }
 }
+const MUSIC_PLAY_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.5 5.4c0-.72.78-1.17 1.4-.81l11.2 6.6c.61.36.61 1.26 0 1.62l-11.2 6.6c-.62.36-1.4-.09-1.4-.81V5.4z"/></svg>';
+const MUSIC_PAUSE_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4.4" height="15" rx="1.6"/><rect x="13.6" y="4.5" width="4.4" height="15" rx="1.6"/></svg>';
+
 function renderMusicProgress() {
-  if (state.view !== 'study' || !music.running || !music.track || music.seeking) return;
+  if (state.view !== 'study' || !music.running || !music.track) return;
   const dur = Number(music.track.duration) || 0;
   const pos = liveMusicPosition();
-  const posEl = $('#music-pos');
-  const durEl = $('#music-dur');
-  const seekEl = $('#music-seek');
-  if (posEl) posEl.textContent = formatTrackTime(pos);
-  if (durEl) durEl.textContent = formatTrackTime(dur);
-  if (seekEl) {
-    seekEl.max = String(Math.max(1, Math.floor(dur)));
-    seekEl.value = String(Math.floor(pos));
-  }
   if (music.state === 'playing' && dur > 0 && pos >= dur - 0.5 && Date.now() - music.syncedAt > 2000) {
     loadMusicState();
   }
@@ -756,7 +741,7 @@ function renderMusic() {
 
   $('#music-title').textContent = music.track.name || 'Unknown track';
   $('#music-artist').textContent = music.track.artist || music.track.album || 'Apple Music';
-  $('#music-play').innerHTML = music.state === 'playing' ? PAUSE_ICON : PLAY_ICON;
+  $('#music-play').innerHTML = music.state === 'playing' ? MUSIC_PAUSE_ICON : MUSIC_PLAY_ICON;
   $('#music-play').setAttribute('aria-label', music.state === 'playing' ? 'Pause' : 'Play');
   $('#music-shuffle').setAttribute('aria-pressed', String(music.shuffle));
   $('#music-repeat').setAttribute('aria-pressed', String(music.repeat !== 'off'));
@@ -818,17 +803,6 @@ $('#music-queue-list')?.addEventListener('click', event => {
   const btn = event.target.closest('[data-music-track]');
   if (!btn) return;
   sendMusicControl({ action: 'playTrack', index: Number(btn.dataset.musicTrack) });
-});
-const musicSeek = $('#music-seek');
-musicSeek?.addEventListener('input', () => {
-  music.seeking = true;
-  const posEl = $('#music-pos');
-  if (posEl) posEl.textContent = formatTrackTime(musicSeek.value);
-});
-musicSeek?.addEventListener('change', async () => {
-  const target = Number(musicSeek.value);
-  music.seeking = false;
-  await sendMusicControl({ action: 'seek', position: target });
 });
 let volTimer;
 $('#music-volume')?.addEventListener('input', event => {
