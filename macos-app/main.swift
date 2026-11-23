@@ -39,7 +39,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(musicStateChanged(_:)),
+            name: Notification.Name("com.apple.Music.playerInfo"),
+            object: nil
+        )
+
         loadAppWithFallback()
+    }
+
+    @objc private func musicStateChanged(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript("window.__nitcMusicChanged?.()", completionHandler: nil)
+        }
     }
 
     private func loadAppWithFallback() {

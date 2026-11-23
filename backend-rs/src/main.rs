@@ -9,6 +9,7 @@ use std::io::{self, BufRead, Write};
 use std::net::TcpListener;
 use std::os::unix::io::FromRawFd;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -78,10 +79,17 @@ impl ApiError {
     }
 }
 
+struct ArtworkCache {
+    key: String,
+    mime: String,
+    bytes: Vec<u8>,
+}
+
 struct AppState {
     db: Mutex<Connection>,
     public_dir: PathBuf,
     public_hosts: HashSet<String>,
+    artwork_cache: Mutex<Option<ArtworkCache>>,
 }
 
 fn now_iso() -> String {
@@ -801,6 +809,235 @@ fn mime_for(path: &Path) -> &'static str {
     }
 }
 
+fn music_is_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "Music"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn run_jxa(script: &str) -> Result<String, ApiError> {
+    let out = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()
+        .map_err(|e| ApiError::internal(format!("osascript failed: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(ApiError::bad_request(if stderr.is_empty() {
+            "Apple Music command failed".to_string()
+        } else {
+            stderr
+        }));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn music_get_state() -> Result<Value, ApiError> {
+    if !music_is_running() {
+        return Ok(json!({ "running": false, "state": "stopped" }));
+    }
+    let script = r#"
+const m = Application("Music");
+const out = { running: true, state: "stopped", shuffle: false, repeat: "off", volume: 100, position: 0, track: null, playlist: null };
+try { out.state = String(m.playerState()); } catch(e) {}
+try { out.shuffle = Boolean(m.shuffleEnabled()); } catch(e) {}
+try { out.repeat = String(m.songRepeat()); } catch(e) {}
+try { out.volume = Number(m.soundVolume()); } catch(e) {}
+try { out.position = Number(m.playerPosition()) || 0; } catch(e) {}
+try {
+  const t = m.currentTrack();
+  const name = String(t.name());
+  if (name) {
+    let pid = "";
+    try { pid = String(t.persistentID()); } catch(e) { pid = name; }
+    let fav = false;
+    try { fav = Boolean(t.favorited()); } catch(e) {}
+    let idx = 0;
+    try { idx = Number(t.index()) || 0; } catch(e) {}
+    let artCount = 0;
+    try { artCount = Number(t.artworks.length) || 0; } catch(e) {}
+    out.track = {
+      id: pid,
+      name,
+      artist: String(t.artist() || ""),
+      album: String(t.album() || ""),
+      duration: Number(t.duration()) || 0,
+      index: idx,
+      favorited: fav,
+      hasArtwork: artCount > 0
+    };
+  }
+} catch(e) {}
+try {
+  const p = m.currentPlaylist();
+  out.playlist = { name: String(p.name() || ""), count: Number(p.tracks.length) || 0 };
+} catch(e) {}
+JSON.stringify(out);
+"#;
+    let raw = run_jxa(script)?;
+    serde_json::from_str(&raw).map_err(|e| ApiError::internal(e.to_string()))
+}
+
+fn music_get_queue() -> Result<Value, ApiError> {
+    if !music_is_running() {
+        return Ok(json!({ "running": false, "playlist": null, "tracks": [] }));
+    }
+    let script = r#"
+const m = Application("Music");
+const out = { running: true, shuffle: false, playlist: null, tracks: [] };
+try { out.shuffle = Boolean(m.shuffleEnabled()); } catch(e) {}
+let curIdx = -1;
+try { curIdx = Number(m.currentTrack().index()) || -1; } catch(e) {}
+try {
+  const p = m.currentPlaylist();
+  const names = p.tracks.name();
+  const artists = p.tracks.artist();
+  const durations = p.tracks.duration();
+  const total = names.length;
+  out.playlist = { name: String(p.name() || ""), count: total };
+  const limit = Math.min(total, 200);
+  const list = [];
+  for (let i = 0; i < limit; i++) {
+    list.push({
+      index: i + 1,
+      name: String(names[i] || ""),
+      artist: String(artists[i] || ""),
+      duration: Number(durations[i]) || 0,
+      current: (i + 1) === curIdx
+    });
+  }
+  out.tracks = list;
+} catch(e) {}
+JSON.stringify(out);
+"#;
+    let raw = run_jxa(script)?;
+    serde_json::from_str(&raw).map_err(|e| ApiError::internal(e.to_string()))
+}
+
+fn music_get_artwork(state: &AppState, cache_key: &str) -> Result<Option<(String, Vec<u8>)>, ApiError> {
+    if !music_is_running() {
+        return Ok(None);
+    }
+    if !cache_key.is_empty() {
+        if let Ok(guard) = state.artwork_cache.lock() {
+            if let Some(ref c) = *guard {
+                if c.key == cache_key {
+                    return Ok(Some((c.mime.clone(), c.bytes.clone())));
+                }
+            }
+        }
+    }
+    let tmp_path = env::temp_dir().join(format!("nitc-music-art-{}.img", Uuid::new_v4()));
+    let tmp_str = tmp_path.to_string_lossy().replace('"', "\\\"");
+    let script = format!(
+        r#"tell application "Music"
+  if (count of artworks of current track) > 0 then
+    set artData to raw data of artwork 1 of current track
+    set artFmt to format of artwork 1 of current track as string
+    set f to open for access POSIX file "{tmp_str}" with write permission
+    set eof f to 0
+    write artData to f
+    close access f
+    return artFmt
+  else
+    return "NONE"
+  end if
+end tell"#
+    );
+    let out = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !out.status.success() {
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(None);
+    }
+    let fmt = String::from_utf8_lossy(&out.stdout).trim().to_ascii_lowercase();
+    if fmt == "none" || !tmp_path.exists() {
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(None);
+    }
+    let bytes = fs::read(&tmp_path).ok();
+    let _ = fs::remove_file(&tmp_path);
+    let Some(bytes) = bytes else { return Ok(None) };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || fmt.contains("png") {
+        "image/png".to_string()
+    } else {
+        "image/jpeg".to_string()
+    };
+    if !cache_key.is_empty() {
+        if let Ok(mut guard) = state.artwork_cache.lock() {
+            *guard = Some(ArtworkCache {
+                key: cache_key.to_string(),
+                mime: mime.clone(),
+                bytes: bytes.clone(),
+            });
+        }
+    }
+    Ok(Some((mime, bytes)))
+}
+
+fn music_control(body: &Value) -> Result<Value, ApiError> {
+    let obj = body.as_object().ok_or_else(|| ApiError::bad_request("Invalid JSON body"))?;
+    let action = obj.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    if action == "open" {
+        let _ = Command::new("open").args(["-a", "Music"]).status();
+        thread::sleep(Duration::from_millis(350));
+        return music_get_state();
+    }
+    if !music_is_running() {
+        return Ok(json!({ "running": false, "state": "stopped" }));
+    }
+    match action {
+        "playpause" => { let _ = run_jxa("Application('Music').playpause(); 'ok';")?; }
+        "next" => { let _ = run_jxa("Application('Music').nextTrack(); 'ok';")?; }
+        "previous" => { let _ = run_jxa("Application('Music').backTrack(); 'ok';")?; }
+        "shuffle" => { let _ = run_jxa("const m=Application('Music'); m.shuffleEnabled = !m.shuffleEnabled(); 'ok';")?; }
+        "repeat" => {
+            let _ = run_jxa(
+                "const m=Application('Music'); const cur=String(m.songRepeat()); m.songRepeat = cur === 'off' ? 'all' : cur === 'all' ? 'one' : 'off'; 'ok';",
+            )?;
+        }
+        "favorite" => {
+            let _ = run_jxa("const m=Application('Music'); const t=m.currentTrack(); t.favorited = !t.favorited(); 'ok';")?;
+        }
+        "seek" => {
+            let pos = obj
+                .get("position")
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .ok_or_else(|| ApiError::bad_request("position must be a non-negative number"))?;
+            let _ = run_jxa(&format!("Application('Music').playerPosition = {pos:.3}; 'ok';"))?;
+        }
+        "volume" => {
+            let vol = obj
+                .get("volume")
+                .and_then(|v| v.as_i64())
+                .map(|v| v.clamp(0, 100))
+                .ok_or_else(|| ApiError::bad_request("volume must be an integer 0..100"))?;
+            let _ = run_jxa(&format!("Application('Music').soundVolume = {vol}; 'ok';"))?;
+        }
+        "playTrack" => {
+            let idx = obj
+                .get("index")
+                .and_then(|v| v.as_i64())
+                .filter(|&v| v >= 1 && v <= 10000)
+                .ok_or_else(|| ApiError::bad_request("index must be a positive integer"))?;
+            let _ = run_jxa(&format!(
+                "const m=Application('Music'); m.currentPlaylist().tracks.at({}).play(); 'ok';",
+                idx - 1
+            ))?;
+        }
+        _ => return Err(ApiError::bad_request("Unsupported music action")),
+    }
+    thread::sleep(Duration::from_millis(60));
+    music_get_state()
+}
+
 fn handle_http(state: &AppState, mut req: Request) {
     let raw_url = req.url().to_string();
     let (raw_path, raw_query) = match raw_url.split_once('?') {
@@ -815,6 +1052,55 @@ fn handle_http(state: &AppState, mut req: Request) {
             || !origin_allowed(header_value(&req, "origin"), &state.public_hosts)
         {
             let _ = req.respond(json_response(403, &json!({ "error": "Forbidden" })));
+            return;
+        }
+
+        if method == Method::Get && raw_path == "/api/music/artwork" {
+            let key = query.get("id").map(|s| s.as_str()).unwrap_or("");
+            match music_get_artwork(state, key) {
+                Ok(Some((mime, bytes))) => {
+                    let resp = Response::from_data(bytes)
+                        .with_status_code(200)
+                        .with_header(Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap())
+                        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=3600"[..]).unwrap())
+                        .with_header(Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap());
+                    let _ = req.respond(resp);
+                }
+                _ => {
+                    let _ = req.respond(json_response(404, &json!({ "error": "No artwork" })));
+                }
+            }
+            return;
+        }
+
+        if method == Method::Get && raw_path == "/api/music/state" {
+            match music_get_state() {
+                Ok(val) => { let _ = req.respond(json_response(200, &val)); }
+                Err(err) => { let _ = req.respond(json_response(err.status, &json!({ "error": err.message }))); }
+            }
+            return;
+        }
+
+        if method == Method::Get && raw_path == "/api/music/queue" {
+            match music_get_queue() {
+                Ok(val) => { let _ = req.respond(json_response(200, &val)); }
+                Err(err) => { let _ = req.respond(json_response(err.status, &json!({ "error": err.message }))); }
+            }
+            return;
+        }
+
+        if method == Method::Post && raw_path == "/api/music/control" {
+            let has_json_ct = header_value(&req, "content-type")
+                .map(|ct| ct.to_ascii_lowercase().contains("application/json"))
+                .unwrap_or(false);
+            if !has_json_ct {
+                let _ = req.respond(json_response(400, &json!({ "error": "Content-Type must be application/json" })));
+                return;
+            }
+            match read_json_body(&mut req).and_then(|b| music_control(&b)) {
+                Ok(val) => { let _ = req.respond(json_response(200, &val)); }
+                Err(err) => { let _ = req.respond(json_response(err.status, &json!({ "error": err.message }))); }
+            }
             return;
         }
 
@@ -1171,6 +1457,7 @@ fn main() {
         db: Mutex::new(conn),
         public_dir,
         public_hosts,
+        artwork_cache: Mutex::new(None),
     });
 
     if is_mcp {

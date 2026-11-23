@@ -47,6 +47,8 @@ cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>NITC HQ Tasks connects to Apple Music to show now-playing artwork and relay playback controls during study sessions.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>

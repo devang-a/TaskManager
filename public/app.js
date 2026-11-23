@@ -110,6 +110,9 @@ function renderHeader() {
   document.body.classList.toggle('study-mode', inStudy);
   const studyStage = $('#study-stage');
   if (studyStage) studyStage.hidden = !inStudy;
+  const musicDock = $('#music-dock');
+  if (musicDock) musicDock.hidden = !inStudy;
+  if (!inStudy && typeof music !== 'undefined') music.queueOpen = false;
 }
 function renderCourseNav() {
   const courseNav = $('#course-nav');
@@ -258,6 +261,7 @@ document.querySelectorAll('.nav-item').forEach(button => button.addEventListener
     state.view = 'study';
     renderHeader();
     loadStudy();
+    loadMusicState();
     return;
   }
   state.view = button.dataset.view;
@@ -303,6 +307,7 @@ function maybeAutoReload() {
   if (dialog.open) return;
   loadTasks();
   loadStudy();
+  if (state.view === 'study') loadMusicState();
 }
 
 /* Study Timer & Daily Progress Graph */
@@ -635,7 +640,10 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     cycleTheme();
   } else if (event.key === 'Escape') {
-    if (study.graphOpen) {
+    if (music.queueOpen) {
+      music.queueOpen = false;
+      renderMusic();
+    } else if (study.graphOpen) {
       study.graphOpen = false;
       renderStudy();
     } else {
@@ -645,6 +653,193 @@ document.addEventListener('keydown', event => {
   }
 });
 setInterval(renderStudyClockOnly, 1000);
+
+/* Apple Music Study Connector */
+const music = {
+  running: false,
+  state: 'stopped',
+  shuffle: false,
+  repeat: 'off',
+  volume: 80,
+  position: 0,
+  syncedAt: 0,
+  track: null,
+  playlist: null,
+  queueOpen: false,
+  queueTracks: [],
+  artTrackId: '',
+  seeking: false,
+  busy: false
+};
+
+function formatTrackTime(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}:${String(rem).padStart(2, '0')}`;
+}
+function liveMusicPosition() {
+  if (!music.track) return 0;
+  const dur = Number(music.track.duration) || 0;
+  if (music.state !== 'playing') return Math.min(dur, music.position);
+  const elapsed = Math.max(0, (Date.now() - music.syncedAt) / 1000);
+  return Math.min(dur, music.position + elapsed);
+}
+function applyMusicState(data) {
+  music.running = Boolean(data?.running);
+  music.state = data?.state || 'stopped';
+  music.shuffle = Boolean(data?.shuffle);
+  music.repeat = data?.repeat || 'off';
+  music.volume = Number.isFinite(Number(data?.volume)) ? Number(data.volume) : music.volume;
+  music.position = Number(data?.position) || 0;
+  music.syncedAt = Date.now();
+  music.track = data?.track || null;
+  music.playlist = data?.playlist || null;
+  renderMusic();
+}
+async function loadMusicState() {
+  try {
+    const data = await request('/api/music/state');
+    applyMusicState(data);
+    if (music.queueOpen && music.running) loadMusicQueue();
+  } catch { /* ignore if backend unavailable */ }
+}
+async function loadMusicQueue() {
+  try {
+    const data = await request('/api/music/queue');
+    music.queueTracks = Array.isArray(data.tracks) ? data.tracks : [];
+    if (data.playlist) music.playlist = data.playlist;
+    renderMusicQueue();
+  } catch { /* ignore */ }
+}
+async function sendMusicControl(payload) {
+  if (music.busy) return;
+  music.busy = true;
+  try {
+    const data = await request('/api/music/control', { method: 'POST', body: JSON.stringify(payload) });
+    applyMusicState(data);
+    if (music.queueOpen && music.running) loadMusicQueue();
+  } catch (error) { showToast(error.message); }
+  finally { music.busy = false; }
+}
+function renderMusicProgress() {
+  if (state.view !== 'study' || !music.running || !music.track || music.seeking) return;
+  const dur = Number(music.track.duration) || 0;
+  const pos = liveMusicPosition();
+  const posEl = $('#music-pos');
+  const durEl = $('#music-dur');
+  const seekEl = $('#music-seek');
+  if (posEl) posEl.textContent = formatTrackTime(pos);
+  if (durEl) durEl.textContent = formatTrackTime(dur);
+  if (seekEl) {
+    seekEl.max = String(Math.max(1, Math.floor(dur)));
+    seekEl.value = String(Math.floor(pos));
+  }
+  if (music.state === 'playing' && dur > 0 && pos >= dur - 0.5 && Date.now() - music.syncedAt > 2000) {
+    loadMusicState();
+  }
+}
+function renderMusic() {
+  const dock = $('#music-dock');
+  if (!dock) return;
+  dock.hidden = state.view !== 'study';
+  const idleBar = $('#music-idle-bar');
+  const playerBar = $('#music-player-bar');
+  const queuePanel = $('#music-queue-panel');
+  const hasTrack = music.running && Boolean(music.track);
+  if (idleBar) idleBar.hidden = hasTrack;
+  if (playerBar) playerBar.hidden = !hasTrack;
+  if (queuePanel) queuePanel.hidden = !(hasTrack && music.queueOpen);
+  const queueBtn = $('#music-queue-btn');
+  if (queueBtn) queueBtn.setAttribute('aria-expanded', String(Boolean(hasTrack && music.queueOpen)));
+  if (!hasTrack) return;
+
+  $('#music-title').textContent = music.track.name || 'Unknown track';
+  $('#music-artist').textContent = music.track.artist || music.track.album || 'Apple Music';
+  $('#music-play').innerHTML = music.state === 'playing' ? PAUSE_ICON : PLAY_ICON;
+  $('#music-play').setAttribute('aria-label', music.state === 'playing' ? 'Pause' : 'Play');
+  $('#music-shuffle').setAttribute('aria-pressed', String(music.shuffle));
+  $('#music-repeat').setAttribute('aria-pressed', String(music.repeat !== 'off'));
+  $('#music-repeat-one').hidden = music.repeat !== 'one';
+  $('#music-fav').setAttribute('aria-pressed', String(Boolean(music.track.favorited)));
+  const vol = $('#music-volume');
+  if (vol && document.activeElement !== vol) vol.value = String(music.volume);
+
+  const artEl = $('#music-art');
+  const artFallback = $('#music-art-fallback');
+  const trackKey = `${music.track.id || ''}|${music.track.name}|${music.track.album}`;
+  if (music.track.hasArtwork && artEl && artFallback) {
+    if (music.artTrackId !== trackKey) {
+      music.artTrackId = trackKey;
+      artEl.onload = () => { artEl.hidden = false; artFallback.hidden = true; };
+      artEl.onerror = () => { artEl.hidden = true; artFallback.hidden = false; };
+      artEl.src = `/api/music/artwork?id=${encodeURIComponent(trackKey)}`;
+    }
+  } else if (artEl && artFallback) {
+    music.artTrackId = '';
+    artEl.hidden = true;
+    artFallback.hidden = false;
+  }
+  renderMusicProgress();
+}
+function renderMusicQueue() {
+  const nameEl = $('#music-playlist-name');
+  const metaEl = $('#music-playlist-meta');
+  const listEl = $('#music-queue-list');
+  if (!listEl) return;
+  const plName = music.playlist?.name || 'Current playlist';
+  const count = music.playlist?.count ?? music.queueTracks.length;
+  if (nameEl) nameEl.textContent = plName;
+  if (metaEl) metaEl.textContent = `${count} tracks${music.shuffle ? ' · shuffle on' : ''}`;
+  if (!music.queueTracks.length) {
+    listEl.innerHTML = '<div class="music-queue-empty">No playlist tracks available.</div>';
+    return;
+  }
+  listEl.innerHTML = music.queueTracks.map(t => `<button type="button" class="music-queue-item ${t.current ? 'is-current' : ''}" data-music-track="${t.index}" role="listitem">
+    <span class="music-q-num">${t.current ? '▶' : t.index}</span>
+    <span class="music-q-meta"><span class="music-q-name">${escapeHTML(t.name)}</span><span class="music-q-artist">${escapeHTML(t.artist)}</span></span>
+    <span class="music-q-dur">${formatTrackTime(t.duration)}</span>
+  </button>`).join('');
+}
+
+$('#music-open')?.addEventListener('click', () => sendMusicControl({ action: 'open' }));
+$('#music-play')?.addEventListener('click', () => sendMusicControl({ action: 'playpause' }));
+$('#music-next')?.addEventListener('click', () => sendMusicControl({ action: 'next' }));
+$('#music-prev')?.addEventListener('click', () => sendMusicControl({ action: 'previous' }));
+$('#music-shuffle')?.addEventListener('click', () => sendMusicControl({ action: 'shuffle' }));
+$('#music-repeat')?.addEventListener('click', () => sendMusicControl({ action: 'repeat' }));
+$('#music-fav')?.addEventListener('click', () => sendMusicControl({ action: 'favorite' }));
+$('#music-queue-btn')?.addEventListener('click', () => {
+  music.queueOpen = !music.queueOpen;
+  renderMusic();
+  if (music.queueOpen) loadMusicQueue();
+});
+$('#music-queue-list')?.addEventListener('click', event => {
+  const btn = event.target.closest('[data-music-track]');
+  if (!btn) return;
+  sendMusicControl({ action: 'playTrack', index: Number(btn.dataset.musicTrack) });
+});
+const musicSeek = $('#music-seek');
+musicSeek?.addEventListener('input', () => {
+  music.seeking = true;
+  const posEl = $('#music-pos');
+  if (posEl) posEl.textContent = formatTrackTime(musicSeek.value);
+});
+musicSeek?.addEventListener('change', async () => {
+  const target = Number(musicSeek.value);
+  music.seeking = false;
+  await sendMusicControl({ action: 'seek', position: target });
+});
+let volTimer;
+$('#music-volume')?.addEventListener('input', event => {
+  const val = Number(event.target.value);
+  clearTimeout(volTimer);
+  volTimer = setTimeout(() => sendMusicControl({ action: 'volume', volume: val }), 120);
+});
+window.__nitcMusicChanged = () => {
+  if (state.view === 'study') loadMusicState();
+};
+setInterval(renderMusicProgress, 1000);
 const themeButton = $('#theme-button');
 const themeMenu = $('#theme-menu');
 const themeBg = $('#theme-bg');
