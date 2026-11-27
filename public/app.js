@@ -839,12 +839,19 @@ const THEME_CATALOG = [
 ];
 const THEME_MAP = new Map(THEME_CATALOG.map(item => [item.id, item]));
 const LEGACY_THEMES = { white: 'night-reef', system: 'night-reef', light: 'night-reef', editorial: 'night-reef', dark: 'midnight' };
+const BATTERY_MOTION_KEY = 'nitc-battery-motion';
 let activeThemeId = 'night-reef';
+let onBatteryPower = false;
+let allowBatteryMotion = (() => {
+  try { return localStorage.getItem(BATTERY_MOTION_KEY) === '1'; } catch { return false; }
+})();
 const reducedMotionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 
 function buildThemeMenu() {
   if (!themeMenu) return;
-  themeMenu.innerHTML = THEME_CATALOG.map(t => `<button type="button" role="menuitemradio" aria-checked="false" data-theme-option="${t.id}"><span class="theme-option-left"><i class="theme-swatch" style="background:${t.accent};box-shadow:0 0 0 2px ${t.canvas}" aria-hidden="true"></i>${escapeHTML(t.label)}</span><span class="theme-check" aria-hidden="true">✓</span></button>`).join('');
+  const optionsHtml = THEME_CATALOG.map(t => `<button type="button" role="menuitemradio" aria-checked="false" data-theme-option="${t.id}"><span class="theme-option-left"><i class="theme-swatch" style="background:${t.accent};box-shadow:0 0 0 2px ${t.canvas}" aria-hidden="true"></i>${escapeHTML(t.label)}</span><span class="theme-check" aria-hidden="true">✓</span></button>`).join('');
+  const batteryToggleHtml = `<div class="theme-menu-sep" role="separator"></div><button type="button" role="menuitemcheckbox" aria-checked="${String(!allowBatteryMotion)}" data-battery-static-toggle="true" class="theme-battery-toggle"><span class="theme-option-left">Static on battery</span><span class="theme-check" aria-hidden="true">✓</span></button>`;
+  themeMenu.innerHTML = optionsHtml + batteryToggleHtml;
 }
 function storedTheme() {
   try {
@@ -865,12 +872,13 @@ function syncThemeBackgroundVisibility() {
   const entry = THEME_MAP.get(activeThemeId);
   const hasVideo = Boolean(entry?.video);
   const isVisible = document.visibilityState !== 'hidden' && windowVisible;
+  const shouldPlay = hasVideo && isVisible && !reducedMotionQuery?.matches && (!onBatteryPower || allowBatteryMotion);
   themeBg.hidden = !hasVideo;
   if (!hasVideo) {
     themeBg.pause();
     return;
   }
-  if (isVisible && !reducedMotionQuery?.matches) {
+  if (shouldPlay) {
     themeBg.muted = true;
     const p = themeBg.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -879,6 +887,10 @@ function syncThemeBackgroundVisibility() {
   }
 }
 reducedMotionQuery?.addEventListener?.('change', syncThemeBackgroundVisibility);
+window.__nitcSetPowerSource = onBattery => {
+  onBatteryPower = Boolean(onBattery);
+  syncThemeBackgroundVisibility();
+};
 window.__nitcSetWindowVisible = visible => {
   windowVisible = Boolean(visible);
   syncThemeBackgroundVisibility();
@@ -935,6 +947,15 @@ themeButton.addEventListener('click', () => setThemeMenu(themeMenu.hidden));
 $('#theme-cycle')?.addEventListener('click', cycleTheme);
 $('#study-theme-cycle')?.addEventListener('click', cycleTheme);
 themeMenu.addEventListener('click', event => {
+  const battBtn = event.target.closest('[data-battery-static-toggle]');
+  if (battBtn) {
+    allowBatteryMotion = !allowBatteryMotion;
+    try { localStorage.setItem(BATTERY_MOTION_KEY, allowBatteryMotion ? '1' : '0'); } catch { /* private mode */ }
+    battBtn.setAttribute('aria-checked', String(!allowBatteryMotion));
+    syncThemeBackgroundVisibility();
+    showToast(allowBatteryMotion ? 'Motion enabled on battery' : 'Static theme on battery');
+    return;
+  }
   const option = event.target.closest('[data-theme-option]');
   if (!option) return;
   selectTheme(option.dataset.themeOption);

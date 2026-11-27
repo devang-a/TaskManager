@@ -1,10 +1,12 @@
 import Cocoa
 import WebKit
+import IOKit.ps
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var fallbackBackend: Process?
+    private var powerRunLoopSource: CFRunLoopSource?
     private let appURL = URL(string: "http://127.0.0.1:4173/")!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -53,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         wsnc.addObserver(self, selector: #selector(handleSystemWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
         wsnc.addObserver(self, selector: #selector(handleSystemWake(_:)), name: NSWorkspace.screensDidWakeNotification, object: nil)
 
+        setupPowerSourceObserver()
         loadAppWithFallback()
     }
 
@@ -97,6 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let src = powerRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .defaultMode)
+            powerRunLoopSource = nil
+        }
         if let proc = fallbackBackend, proc.isRunning {
             proc.terminate()
         }
@@ -145,7 +152,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         setWebVisibility(isWindowCurrentlyVisible)
     }
 
+    private var isOnBatteryPower: Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeRetainedValue() as String? else {
+            return false
+        }
+        return type == kIOPSBatteryPowerValue
+    }
+
+    private func setupPowerSourceObserver() {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        if let unmanaged = IOPSNotificationCreateRunLoopSource({ ctx in
+            guard let ctx = ctx else { return }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async {
+                delegate.syncPowerSource()
+            }
+        }, context) {
+            let source = unmanaged.takeRetainedValue()
+            powerRunLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
+    }
+
+    private func syncPowerSource() {
+        let onBatt = isOnBatteryPower
+        webView?.evaluateJavaScript("window.__nitcSetPowerSource?.(\(onBatt ? "true" : "false"))", completionHandler: nil)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncPowerSource()
         setWebVisibility(isWindowCurrentlyVisible)
     }
 

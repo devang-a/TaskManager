@@ -403,6 +403,17 @@ a {
   display: inline;
 }
 
+.theme-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.theme-battery-toggle {
+  font-size: 11.5px;
+  opacity: 0.92;
+}
+
 /* Main Content */
 .content {
   width: 100%;
