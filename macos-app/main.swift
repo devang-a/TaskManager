@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         let contentRect = NSRect(x: 0, y: 0, width: 1120, height: 760)
@@ -45,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             name: Notification.Name("com.apple.Music.playerInfo"),
             object: nil
         )
+
+        let wsnc = NSWorkspace.shared.notificationCenter
+        wsnc.addObserver(self, selector: #selector(handleSystemSleep(_:)), name: NSWorkspace.willSleepNotification, object: nil)
+        wsnc.addObserver(self, selector: #selector(handleSystemSleep(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        wsnc.addObserver(self, selector: #selector(handleSystemWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
+        wsnc.addObserver(self, selector: #selector(handleSystemWake(_:)), name: NSWorkspace.screensDidWakeNotification, object: nil)
 
         loadAppWithFallback()
     }
@@ -104,10 +111,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return true
     }
 
-    // Pause live background themes whenever the window is minimized or occluded (0% GPU)
+    // Pause background video whenever the window is hidden, minimized, occluded, or sleeping (0% GPU)
+    private var isWindowCurrentlyVisible: Bool {
+        guard let window = window else { return false }
+        return !NSApp.isHidden && window.occlusionState.contains(.visible) && !window.isMiniaturized
+    }
+
     func windowDidChangeOcclusionState(_ notification: Notification) {
-        let visible = window.occlusionState.contains(.visible) && !window.isMiniaturized
-        setWebVisibility(visible)
+        setWebVisibility(isWindowCurrentlyVisible)
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
@@ -115,7 +126,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {
-        setWebVisibility(true)
+        setWebVisibility(isWindowCurrentlyVisible)
+    }
+
+    func applicationDidHide(_ notification: Notification) {
+        setWebVisibility(false)
+    }
+
+    func applicationDidUnhide(_ notification: Notification) {
+        setWebVisibility(isWindowCurrentlyVisible)
+    }
+
+    @objc private func handleSystemSleep(_ notification: Notification) {
+        setWebVisibility(false)
+    }
+
+    @objc private func handleSystemWake(_ notification: Notification) {
+        setWebVisibility(isWindowCurrentlyVisible)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        setWebVisibility(isWindowCurrentlyVisible)
     }
 
     private func setWebVisibility(_ visible: Bool) {

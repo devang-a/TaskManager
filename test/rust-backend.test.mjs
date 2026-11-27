@@ -37,10 +37,20 @@ test('Rust backend has full REST, MCP, theme, and study timer parity', { skip: !
     assert.equal(health.ok, true);
     assert.equal(health.timezone, 'Asia/Kolkata');
 
-    const themeResp = await fetch(`${base}/themes/night-reef.svg`);
+    const themeResp = await fetch(`${base}/themes/night-reef.mp4`);
     assert.equal(themeResp.status, 200);
-    assert.equal(themeResp.headers.get('content-type'), 'image/svg+xml');
+    assert.equal(themeResp.headers.get('content-type'), 'video/mp4');
+    assert.equal(themeResp.headers.get('accept-ranges'), 'bytes');
     assert.match(themeResp.headers.get('cache-control') || '', /max-age=86400/);
+
+    const rangeResp = await fetch(`${base}/themes/night-reef.mp4`, { headers: { range: 'bytes=0-1023' } });
+    assert.equal(rangeResp.status, 206);
+    assert.match(rangeResp.headers.get('content-range') || '', /^bytes 0-1023\/\d+$/);
+    assert.equal((await rangeResp.arrayBuffer()).byteLength, 1024);
+
+    const posterResp = await fetch(`${base}/themes/night-reef.jpg`);
+    assert.equal(posterResp.status, 200);
+    assert.equal(posterResp.headers.get('content-type'), 'image/jpeg');
 
     const seeded = await (await fetch(`${base}/api/tasks?view=all`)).json();
     assert.equal(seeded.tasks.length, 15);

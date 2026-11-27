@@ -354,7 +354,7 @@ async function readBody(req) {
   return parsed;
 }
 
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.webp': 'image/webp' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.mp4': 'video/mp4', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' };
 
 const useLaunchdSocket = process.argv.includes('--launchd') || process.env.NITC_LAUNCHD === '1';
 const idleTimeoutMs = Number(process.env.NITC_IDLE_MS ?? (useLaunchdSocket ? 120000 : 0));
@@ -425,8 +425,30 @@ const server = http.createServer(async (req, res) => {
     if (!file.startsWith(`${publicDir}${sep}`) && file !== publicDir) return json(res, 403, { error: 'Forbidden' });
     if (!existsSync(file)) return json(res, 404, { error: 'Not found' });
     const content = readFileSync(file);
+    const total = content.length;
+    const contentType = mime[extname(file)] ?? 'application/octet-stream';
     const cacheControl = pathname.startsWith('/themes/') ? 'public, max-age=86400' : 'no-store';
-    res.writeHead(200, { 'content-type': mime[extname(file)] ?? 'application/octet-stream', 'content-length': content.length, 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' });
+    const rangeHeader = req.headers.range;
+    if (rangeHeader && typeof rangeHeader === 'string' && rangeHeader.startsWith('bytes=')) {
+      const [startStr, endStr] = rangeHeader.slice(6).split(',')[0].split('-');
+      let start = startStr ? Number.parseInt(startStr, 10) : NaN;
+      let end = endStr ? Number.parseInt(endStr, 10) : total - 1;
+      if (Number.isNaN(start) && !Number.isNaN(end)) {
+        start = Math.max(0, total - end);
+        end = total - 1;
+      }
+      if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || start >= total || end < start) {
+        res.writeHead(416, { 'content-range': `bytes */${total}`, 'accept-ranges': 'bytes' });
+        res.end();
+        return;
+      }
+      end = Math.min(end, total - 1);
+      const chunk = content.subarray(start, end + 1);
+      res.writeHead(206, { 'content-type': contentType, 'content-length': chunk.length, 'content-range': `bytes ${start}-${end}/${total}`, 'accept-ranges': 'bytes', 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' });
+      res.end(req.method === 'HEAD' ? undefined : chunk);
+      return;
+    }
+    res.writeHead(200, { 'content-type': contentType, 'content-length': total, 'accept-ranges': 'bytes', 'cache-control': cacheControl, 'x-content-type-options': 'nosniff' });
     res.end(req.method === 'HEAD' ? undefined : content);
   } catch (error) {
     const status = error?.status ?? (error instanceof SyntaxError ? 400 : 500);

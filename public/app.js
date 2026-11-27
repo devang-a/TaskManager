@@ -717,6 +717,7 @@ const MUSIC_PLAY_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="c
 const MUSIC_PAUSE_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4.4" height="15" rx="1.6"/><rect x="13.6" y="4.5" width="4.4" height="15" rx="1.6"/></svg>';
 
 function renderMusicProgress() {
+  if (!windowVisible || document.visibilityState === 'hidden') return;
   if (state.view !== 'study' || !music.running || !music.track) return;
   const dur = Number(music.track.duration) || 0;
   const pos = liveMusicPosition();
@@ -819,26 +820,27 @@ const themeMenu = $('#theme-menu');
 const themeBg = $('#theme-bg');
 const THEME_KEY = 'nitc-theme';
 const THEME_CATALOG = [
-  { id: 'night-reef', label: 'Night Reef', canvas: '#0a1430', accent: '#78d4ed', input: '#162746', asset: '/themes/night-reef.svg' },
-  { id: 'paper-garden', label: 'Paper Garden', canvas: '#35312a', accent: '#c3b58c', input: '#433f38', asset: '/themes/paper-garden.svg' },
-  { id: 'block-clouds', label: 'Block Clouds', canvas: '#0d173f', accent: '#8cb9ef', input: '#1e274c', asset: '/themes/block-clouds.svg' },
-  { id: 'braille-stars', label: 'Braille Stars', canvas: '#0a1430', accent: '#9bbcf5', input: '#1b243e', asset: '/themes/braille-stars.svg' },
-  { id: 'aurora', label: 'Aurora', canvas: '#14123a', accent: '#a9a7eb', input: '#242247', asset: '/themes/aurora.svg' },
-  { id: 'blueprint', label: 'Blueprint', canvas: '#0c2444', accent: '#81bce4', input: '#1d3351', asset: '/themes/blueprint.svg' },
-  { id: 'deep-water', label: 'Deep Water', canvas: '#062c3a', accent: '#66d5d0', input: '#173a47', asset: '/themes/deep-water.svg' },
-  { id: 'departure-board', label: 'Departure Board', canvas: '#1a120b', accent: '#e5b96d', input: '#2a221c', asset: '/themes/departure-board.svg' },
-  { id: 'dither-dunes', label: 'Dither Dunes', canvas: '#1c1712', accent: '#d7a777', input: '#2c2722', asset: '/themes/dither-dunes.webp' },
-  { id: 'ember', label: 'Ember', canvas: '#2a0d12', accent: '#ef946a', input: '#381e22', asset: '/themes/ember.svg' },
-  { id: 'halftone-dusk', label: 'Halftone Dusk', canvas: '#1f2336', accent: '#a9a9e5', input: '#2e3244', asset: '/themes/halftone-dusk.webp' },
-  { id: 'plotter-tide', label: 'Plotter Tide', canvas: '#141a27', accent: '#79b6c4', input: '#242a36', asset: '/themes/plotter-tide.svg' },
-  { id: 'snow-pines', label: 'Snow Pines', canvas: '#14143a', accent: '#a5c9e2', input: '#242447', asset: '/themes/snow-pines.webp' },
-  { id: 'vector-range', label: 'Vector Range', canvas: '#0e2f27', accent: '#8ac9a4', input: '#1f3d36', asset: '/themes/vector-range.svg' },
-  { id: 'midnight', label: 'Midnight', canvas: '#0e131b', accent: '#d9b36a', input: '#161e2b', asset: null },
-  { id: 'nova', label: 'Nova', canvas: '#09090b', accent: '#f2f2f0', input: '#141418', asset: null }
+  { id: 'night-reef', label: 'Night Reef', canvas: '#0a1430', accent: '#78d4ed', input: '#162746', video: '/themes/night-reef.mp4', poster: '/themes/night-reef.jpg' },
+  { id: 'paper-garden', label: 'Paper Garden', canvas: '#35312a', accent: '#c3b58c', input: '#433f38', video: '/themes/paper-garden.mp4', poster: '/themes/paper-garden.jpg' },
+  { id: 'block-clouds', label: 'Block Clouds', canvas: '#0d173f', accent: '#8cb9ef', input: '#1e274c', video: '/themes/block-clouds.mp4', poster: '/themes/block-clouds.jpg' },
+  { id: 'braille-stars', label: 'Braille Stars', canvas: '#0a1430', accent: '#9bbcf5', input: '#1b243e', video: '/themes/braille-stars.mp4', poster: '/themes/braille-stars.jpg' },
+  { id: 'aurora', label: 'Aurora', canvas: '#14123a', accent: '#a9a7eb', input: '#242247', video: '/themes/aurora.mp4', poster: '/themes/aurora.jpg' },
+  { id: 'blueprint', label: 'Blueprint', canvas: '#0c2444', accent: '#81bce4', input: '#1d3351', video: '/themes/blueprint.mp4', poster: '/themes/blueprint.jpg' },
+  { id: 'deep-water', label: 'Deep Water', canvas: '#062c3a', accent: '#66d5d0', input: '#173a47', video: '/themes/deep-water.mp4', poster: '/themes/deep-water.jpg' },
+  { id: 'departure-board', label: 'Departure Board', canvas: '#1a120b', accent: '#e5b96d', input: '#2a221c', video: '/themes/departure-board.mp4', poster: '/themes/departure-board.jpg' },
+  { id: 'dither-dunes', label: 'Dither Dunes', canvas: '#1c1712', accent: '#d7a777', input: '#2c2722', video: '/themes/dither-dunes.mp4', poster: '/themes/dither-dunes.jpg' },
+  { id: 'ember', label: 'Ember', canvas: '#2a0d12', accent: '#ef946a', input: '#381e22', video: '/themes/ember.mp4', poster: '/themes/ember.jpg' },
+  { id: 'halftone-dusk', label: 'Halftone Dusk', canvas: '#1f2336', accent: '#a9a9e5', input: '#2e3244', video: '/themes/halftone-dusk.mp4', poster: '/themes/halftone-dusk.jpg' },
+  { id: 'plotter-tide', label: 'Plotter Tide', canvas: '#141a27', accent: '#79b6c4', input: '#242a36', video: '/themes/plotter-tide.mp4', poster: '/themes/plotter-tide.jpg' },
+  { id: 'snow-pines', label: 'Snow Pines', canvas: '#14143a', accent: '#a5c9e2', input: '#242447', video: '/themes/snow-pines.mp4', poster: '/themes/snow-pines.jpg' },
+  { id: 'vector-range', label: 'Vector Range', canvas: '#0e2f27', accent: '#8ac9a4', input: '#1f3d36', video: '/themes/vector-range.mp4', poster: '/themes/vector-range.jpg' },
+  { id: 'midnight', label: 'Midnight', canvas: '#0e131b', accent: '#d9b36a', input: '#161e2b', video: null, poster: null },
+  { id: 'nova', label: 'Nova', canvas: '#09090b', accent: '#f2f2f0', input: '#141418', video: null, poster: null }
 ];
 const THEME_MAP = new Map(THEME_CATALOG.map(item => [item.id, item]));
 const LEGACY_THEMES = { white: 'night-reef', system: 'night-reef', light: 'night-reef', editorial: 'night-reef', dark: 'midnight' };
 let activeThemeId = 'night-reef';
+const reducedMotionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 
 function buildThemeMenu() {
   if (!themeMenu) return;
@@ -861,9 +863,22 @@ let windowVisible = true;
 function syncThemeBackgroundVisibility() {
   if (!themeBg) return;
   const entry = THEME_MAP.get(activeThemeId);
-  const shouldShow = Boolean(entry?.asset) && document.visibilityState !== 'hidden' && windowVisible;
-  themeBg.hidden = !shouldShow;
+  const hasVideo = Boolean(entry?.video);
+  const isVisible = document.visibilityState !== 'hidden' && windowVisible;
+  themeBg.hidden = !hasVideo;
+  if (!hasVideo) {
+    themeBg.pause();
+    return;
+  }
+  if (isVisible && !reducedMotionQuery?.matches) {
+    themeBg.muted = true;
+    const p = themeBg.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } else {
+    themeBg.pause();
+  }
 }
+reducedMotionQuery?.addEventListener?.('change', syncThemeBackgroundVisibility);
 window.__nitcSetWindowVisible = visible => {
   windowVisible = Boolean(visible);
   syncThemeBackgroundVisibility();
@@ -882,12 +897,20 @@ function applyTheme(choice, { announce = false } = {}) {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', entry.canvas);
   if (themeBg) {
-    if (entry.asset) {
-      if (themeBg.getAttribute('src') !== entry.asset) themeBg.setAttribute('src', entry.asset);
-      themeBg.hidden = document.visibilityState === 'hidden';
+    if (entry.video) {
+      if (entry.poster && themeBg.getAttribute('poster') !== entry.poster) {
+        themeBg.setAttribute('poster', entry.poster);
+      }
+      if (themeBg.getAttribute('src') !== entry.video) {
+        themeBg.setAttribute('src', entry.video);
+        themeBg.load();
+      }
     } else {
-      themeBg.hidden = true;
+      themeBg.pause();
+      themeBg.removeAttribute('src');
+      themeBg.removeAttribute('poster');
     }
+    syncThemeBackgroundVisibility();
   }
   const studyLabel = $('#study-theme-label');
   if (studyLabel) studyLabel.textContent = entry.label;

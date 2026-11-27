@@ -805,7 +805,41 @@ fn mime_for(path: &Path) -> &'static str {
         "json" => "application/json; charset=utf-8",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
         _ => "application/octet-stream",
+    }
+}
+
+fn parse_byte_range(header: &str, total: usize) -> Option<Result<(usize, usize), ()>> {
+    let spec = header.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') || total == 0 {
+        return Some(Err(()));
+    }
+    let (start_str, end_str) = spec.split_once('-')?;
+    if start_str.is_empty() {
+        let suffix: usize = end_str.trim().parse().ok()?;
+        if suffix == 0 {
+            return Some(Err(()));
+        }
+        let len = suffix.min(total);
+        Some(Ok((total - len, total - 1)))
+    } else {
+        let start: usize = start_str.trim().parse().ok()?;
+        if start >= total {
+            return Some(Err(()));
+        }
+        let end = if end_str.trim().is_empty() {
+            total - 1
+        } else {
+            let e: usize = end_str.trim().parse().ok()?;
+            if e < start {
+                return Some(Err(()));
+            }
+            e.min(total - 1)
+        };
+        Some(Ok((start, end)))
     }
 }
 
@@ -1245,12 +1279,46 @@ fn handle_http(state: &AppState, mut req: Request) {
             } else {
                 "no-store"
             };
-            let len = bytes.len();
+            let total = bytes.len();
+            if let Some(range_hdr) = header_value(&req, "range") {
+                match parse_byte_range(range_hdr, total) {
+                    Some(Ok((start, end))) => {
+                        let slice_len = end - start + 1;
+                        let body_bytes = if method == Method::Head {
+                            Vec::new()
+                        } else {
+                            bytes[start..=end].to_vec()
+                        };
+                        let cr = format!("bytes {start}-{end}/{total}");
+                        let resp = Response::from_data(body_bytes)
+                            .with_status_code(206)
+                            .with_header(Header::from_bytes(&b"Content-Type"[..], ct.as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"Content-Length"[..], slice_len.to_string().as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"Content-Range"[..], cr.as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap())
+                            .with_header(Header::from_bytes(&b"Cache-Control"[..], cc.as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap());
+                        let _ = req.respond(resp);
+                        return;
+                    }
+                    Some(Err(())) => {
+                        let cr = format!("bytes */{total}");
+                        let resp = Response::from_data(Vec::new())
+                            .with_status_code(416)
+                            .with_header(Header::from_bytes(&b"Content-Range"[..], cr.as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
+                        let _ = req.respond(resp);
+                        return;
+                    }
+                    None => {}
+                }
+            }
             let body_bytes = if method == Method::Head { Vec::new() } else { bytes };
             let resp = Response::from_data(body_bytes)
                 .with_status_code(200)
                 .with_header(Header::from_bytes(&b"Content-Type"[..], ct.as_bytes()).unwrap())
-                .with_header(Header::from_bytes(&b"Content-Length"[..], len.to_string().as_bytes()).unwrap())
+                .with_header(Header::from_bytes(&b"Content-Length"[..], total.to_string().as_bytes()).unwrap())
+                .with_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap())
                 .with_header(Header::from_bytes(&b"Cache-Control"[..], cc.as_bytes()).unwrap())
                 .with_header(Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap());
             let _ = req.respond(resp);
